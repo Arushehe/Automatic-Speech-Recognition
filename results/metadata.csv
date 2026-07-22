@@ -1,0 +1,20 @@
+filename,original_duration_sec,original_sample_rate,original_channels,original_size_kb,status,reason,processed_filename,processed_duration_sec,processed_sample_rate,processed_channels,processed_size_kb
+New Recording 10.m4a,5.06,48000,1,44.13,kept,,New Recording 10.wav,5.06,16000,1,158.04
+New Recording 12.m4a,3.56,48000,1,32.47,kept,,New Recording 12.wav,3.56,16000,1,111.38
+New Recording 13.m4a,5.67,48000,1,49.43,kept,,New Recording 13.wav,5.67,16000,1,177.38
+New Recording 14.m4a,2.75,48000,1,25.75,kept,,New Recording 14.wav,2.75,16000,1,86.04
+New Recording 15.m4a,4.39,48000,1,38.52,kept,,New Recording 15.wav,4.39,16000,1,137.38
+New Recording 16.m4a,5.5,48000,1,48.01,kept,,New Recording 16.wav,5.5,16000,1,172.04
+New Recording 17.m4a,3.8,48000,1,34.37,kept,,New Recording 17.wav,3.8,16000,1,118.71
+New Recording 18.m4a,5.78,48000,1,51.0,kept,,New Recording 18.wav,5.78,16000,1,180.71
+New Recording 19.m4a,2.45,48000,1,23.5,kept,,New Recording 19.wav,2.45,16000,1,76.71
+New Recording 2.m4a,6.46,48000,1,56.41,kept,,New Recording 2.wav,6.46,16000,1,202.04
+New Recording 20.m4a,1.56,48000,1,15.12,removed,duration 1.56s < min 2.0s,,,,,
+New Recording 21.m4a,1.22,48000,1,12.53,removed,duration 1.22s < min 2.0s,,,,,
+New Recording 22.m4a,1.26,48000,1,12.96,removed,duration 1.26s < min 2.0s,,,,,
+New Recording 4.m4a,2.67,48000,1,24.43,kept,,New Recording 4.wav,2.67,16000,1,83.38
+New Recording 5.m4a,6.7,48000,1,57.45,kept,,New Recording 5.wav,6.7,16000,1,209.38
+New Recording 6.m4a,3.8,48000,1,33.48,kept,,New Recording 6.wav,3.8,16000,1,118.71
+New Recording 7.m4a,2.73,48000,1,24.82,kept,,New Recording 7.wav,2.73,16000,1,85.38
+New Recording 8.m4a,4.16,48000,1,36.72,kept,,New Recording 8.wav,4.16,16000,1,130.04
+New Recording 9.m4a,5.87,48000,1,51.14,kept,,New Recording 9.wav,5.87,16000,1,183.38
