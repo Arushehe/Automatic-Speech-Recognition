@@ -1,98 +1,128 @@
 # Scalable ASR Pipeline Design — 1 Million Recordings/Month
 
-> **Note for candidate:** This is a starting draft to help you reason about the
-> architecture. Read it, understand every component and *why* it's there, then
-> rewrite the explanations in your own words before submitting — you'll be asked
-> to defend these choices in the interview.
+## Overview
+The preprocessing pipeline was specifically made for this project as it works well for a small number of audio files. However, processing around one million recordings every month requires a scalable architecture. Instead of relying on a single machine, the workload have to be distributed across multiple services so that uploading, preprocessing, and transcription can happen simultaneously.
 
-## 1. Scale, in concrete numbers
+### Estimated Workload
+1,000,000 recordings per month
+Around 33,000 recordings per day
+Around 1,400 recordings per hour
+Around 23 recordings per minute on average
+Since traffic is not always uniform, the system should also be able to handle sudden spikes in uploads.
 
-- 1,000,000 recordings/month → ~33,000/day → ~1,400/hour → ~23/minute on average.
-- Real traffic is bursty (peak hours, campaigns), so design for **5-10x average
-  burst** (~150-230 recordings/minute at peak), not just the average.
-- Assume average clip length ~30-60 seconds → roughly 8,000-16,000 hours of
-  audio/month to store and transcribe.
-
-## 2. High-level architecture
+## Architecture
 
 ```
-[Upload Sources]        [Ingestion Layer]         [Processing]              [Storage/Serving]
-  Mobile/Web App    →    API Gateway/LB      →   Preprocessing Workers  →   Object Storage (raw + processed)
-  Batch Uploads      →    Message Queue        →   Transcription Workers  →   Metadata DB (Postgres)
-  IVR/Call Center    →    (Kafka/SQS)           →   (Whisper on GPU pool)   →   Search/Index (Elasticsearch)
-                                                                            →   Downstream apps / analytics
+Users
+   │
+   ▼
+Upload API
+   │
+   ▼
+Load Balancer
+   │
+   ▼
+Object Storage (Amazon S3)
+   │
+   ▼
+Message Queue (Kafka / RabbitMQ / AWS SQS)
+   │
+   ▼
+Preprocessing Workers
+(Duration Check → Mono → 16 kHz → Metadata)
+   │
+   ▼
+Processed Audio Storage
+   │
+   ▼
+Whisper GPU Workers
+   │
+   ▼
+PostgreSQL Database
+   │
+   ▼
+Application / Dashboard
 ```
+---
 
-### Components and why
+## Components
 
-| Stage | Component | Purpose |
-|---|---|---|
-| Ingestion | API Gateway + Load Balancer | Accepts uploads, auth, rate limiting |
-| Ingestion | Message Queue (Kafka / AWS SQS) | Decouples ingestion from processing; absorbs bursts; enables retries |
-| Storage (raw) | Object storage (S3 / GCS) | Cheap, durable storage for original audio files |
-| Preprocessing | Autoscaling worker pool (Kubernetes/ECS) | Runs the same validation/conversion pipeline (mono, 16kHz, min-duration filter, metadata extraction) at scale |
-| Preprocessing | Dead-letter queue | Captures corrupt/failed files for manual review instead of blocking the pipeline |
-| Transcription | GPU worker pool running Whisper (batched inference) | The actual ASR step; GPU pool autoscales based on queue depth |
-| Storage (processed) | Object storage + CDN | Stores 16kHz mono WAVs and transcripts |
-| Metadata | Relational DB (Postgres) | Tracks file status, durations, sample rates, processing timestamps, transcript IDs |
-| Search | Elasticsearch/OpenSearch | Enables full-text search over transcripts |
-| Monitoring | Prometheus/Grafana + alerting | Queue depth, worker failure rate, latency SLOs |
+### 1. Upload API
+The Upload API part receives audio files from users. It performs basic validation and uploads the files to cloud storage before further processing begins.
 
-## 3. Key design decisions
+### 2. Load Balancer
+A load balancer distributes incoming requests across multiple servers. This prevents a single server from becoming overloaded when many users upload files simultaneously.
 
-**Queue-based decoupling.** Ingestion and processing are separated by a message
-queue so a traffic spike doesn't overwhelm transcription workers — the queue
-buffers the backlog and workers autoscale to drain it.
+### 3. Object Storage
+The uploaded audio files are stored in object storage such as Amazon S3. Object storage is suitable because audio files are large, cost-effective to store, and can be accessed easily by different processing services whenever needed.
 
-**Batch inference for cost efficiency.** Whisper (and most modern ASR models)
-benefit significantly from batched GPU inference. Group incoming files into
-batches (e.g. by queue polling window) rather than processing one at a time,
-which improves GPU utilization and reduces cost-per-minute-of-audio.
+### 4. Message Queue
+Instead of processing every uploaded file immediately, a message which contains the file's location is added to the queue. The queue temporarily stores incoming requests until a worker becomes available. This prevents the system from slowing down during periods of heavy traffic.
 
-**Model size trade-off per use case.** Use a smaller/faster Whisper variant
-(e.g. `base`/`small`) for near-real-time needs, and larger variants
-(`medium`/`large`) for offline/batch jobs where latency matters less but
-accuracy does. This can be tier-based on the customer/use case.
+### 5. Preprocessing Workers
+Multiple preprocessing workers process files from the queue simultaneously.
+Each worker performs the following steps:
+Read audio metadata
+Check audio duration
+Remove files shorter than 2 seconds
+Convert stereo audio to mono
+Resample audio to 16 kHz
+Generate metadata
+Save the processed WAV file
+Since multiple workers can run at the same time, the overall processing speed increases significantly.
 
-**Idempotent, stateless workers.** Each preprocessing/transcription worker
-should be stateless and idempotent (safe to retry) — critical at this scale
-where some fraction of jobs will always fail transiently.
+### 6. Processed Audio Storage
+After preprocessing, all converted audio files are stored separately. Because every file now follows the same consistent format, they are ready to be sent to the ASR model for transcription.
 
-**Cost control.** At 8,000-16,000 hours/month of audio, GPU transcription
-cost dominates. Spot/preemptible GPU instances for the worker pool, combined
-with autoscaling to zero during low-traffic hours, meaningfully cuts cost.
+### 7. Whisper GPU Workers
+GPU-enabled servers load the Whisper model and perform speech to text transcription. Running multiple Whisper workers allows many recordings to be transcribed in parallel, reducing the overall processing time.
 
-**Data lifecycle.** Raw audio can move to cold/archival storage after
-processing (e.g. after 30-90 days) since the processed WAV + transcript is
-what most downstream consumers need day-to-day.
+### 8. PostgreSQL Database
+The database stores important information such as:
+Filename
+Processing status
+Duration
+Sample rate
+Processing timestamp
+Transcript
+From this its easy to track each recording and retrieve the transcription later.
 
-## 4. Handling failure and edge cases
+### 9. Dashboard / API
+The dashboard allows users to check the processing status, view transcripts, and download transcription results.
 
-- Corrupt or unsupported files → routed to a dead-letter queue, logged, and
-  optionally alerted rather than crashing the worker.
-- Duplicate uploads → deduplicate via content hash (e.g. SHA-256 of the audio)
-  before reprocessing.
-- Multilingual content → language ID step before transcription to route to
-  the right model/config (Whisper supports this natively via language
-  detection).
-- Backpressure → if queue depth exceeds a threshold, autoscaler adds more
-  workers up to a cap; beyond the cap, new uploads are queued with an SLA
-  communicated to the client (e.g. "processing within 2 hours").
+## Key Design Decisions
 
-## 5. Rough monthly cost drivers (things to reason about, not exact numbers)
+### Queue-Based Processing
+Instead of sending every uploaded file directly for preprocessing, the system first places the file information into a message queue. This allows the upload service and the processing service to work independently. Even if many users upload files at the same time, the queue stores the requests until workers are available, ny doing this it prevents the system from becoming overloaded.
 
-1. GPU inference hours (transcription) — largest cost, drop with batching + spot instances.
-2. Object storage — cheap per GB, but at scale (thousands of hours of audio/month) still worth lifecycle policies.
-3. Queue/orchestration infra — typically low relative to compute.
-4. Data egress — if transcripts/audio are served to end users frequently, factor in CDN costs.
+### Multiple Preprocessing Workers
+Instead of using a single preprocessing service, multiple workers process audio files simultaneously. Since each worker performs the same preprocessing steps independently, more workers can be added whenever the workload increases. This helps improve processing speed and makes the system more scalable.
 
-## 6. What you should be ready to explain in the interview
+### GPU-Based Whisper Inference
+Speech recognition models like Whisper require significant computational power. Using GPU workers instead of CPUs allows multiple audio recordings to be transcribed much faster, reducing the overall processing time.
 
-- Why a queue instead of direct synchronous processing.
-- Why batch GPU inference matters for cost/throughput.
-- How you'd monitor pipeline health and catch failures early.
-- Trade-offs between accuracy (larger Whisper model) and latency/cost
-  (smaller model), and how you'd decide which to use where.
-- How this design would change if the requirement were real-time streaming
-  instead of batch (this connects directly to the offline vs streaming ASR
-  research question).
+### Separate Storage for Audio and Metadata
+Audio files are stored in object storage, while metadata and transcription details are stored in a relational database. This difference storage pattern makes it easier to manage large audio files while allowing quick access to information such as processing status, duration, timestamps, and transcripts.
+
+### Independent Services
+The upload service, preprocessing service, and transcription service are designed to work independently. If one service requires more resources, it can be scaled without affecting the others. This makes the system easier to maintain and better suited for handling a large number of recordings.
+
+## Possible Challenges
+Some common challenges that may occur are:
+Corrupted or unsupported audio files
+Duplicate uploads
+Large traffic spikes
+Long processing queues
+GPU availability during peak hours
+
+## Future Improvements
+Basic improvements:
+Voice Activity Detection (VAD) to remove silence before transcription.
+Automatic language detection for multilingual audio.
+Parallel preprocessing for faster execution.
+Docker and Kubernetes for easier deployment and scaling.
+Monitoring tools for tracking worker health and processing time.
+
+## Conclusion
+The proposed architecture separates uploading, preprocessing, storage, and transcription into different stages. Since each stage can be scaled independently, the system can efficiently process around one million recordings every month while maintaining reliable performance.
+---
